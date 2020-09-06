@@ -1,5 +1,4 @@
 use serde::Deserialize;
-use std::collections::HashMap;
 use std::fmt::{self, Debug, Formatter};
 use std::fs::File;
 use std::io::{Read, Result};
@@ -16,6 +15,14 @@ pub enum Method {
     Tls,
 }
 
+#[derive(Deserialize, Debug)]
+pub struct ConnectionCount(usize);
+impl Default for ConnectionCount {
+    fn default() -> Self {
+        ConnectionCount(1)
+    }
+}
+
 #[derive(Deserialize)]
 pub struct Account {
     pub host: String,
@@ -24,6 +31,8 @@ pub struct Account {
     pub username: String,
     pub password: PasswordContainer,
     pub folder: String,
+    #[serde(default)]
+    pub connections: ConnectionCount,
 }
 
 #[derive(Deserialize, Debug)]
@@ -57,8 +66,8 @@ impl Debug for Account {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(
             f,
-            "Account {{ method: {:?}, port: {:?} }}",
-            self.method, self.port
+            "Account {{ method: {:?}, port: {:?}, connections: {:?} }}",
+            self.method, self.port, self.connections,
         )
     }
 }
