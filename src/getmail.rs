@@ -1,13 +1,13 @@
 use super::config::*;
 use imap::types::Flag;
-use imap::types::Seq;
+use imap::Session;
 use maildir::Maildir;
 use native_tls::{TlsConnector, TlsStream};
-use std::collections::HashSet;
 use std::ffi::OsString;
 use std::net::TcpStream;
 use std::path::PathBuf;
 use std::process::Command;
+use tokio::sync::mpsc;
 
 quick_error! {
     #[derive(Debug)]
@@ -49,7 +49,6 @@ fn retrieve_password(pc: &PasswordContainer) -> std::io::Result<String> {
             Command::new(spl.next().unwrap())
                 .args(spl)
                 .output()
-                // TODO check if command was successful via o.status.is_success
                 .map(|o| {
                     String::from_utf8(o.stdout)
                         .expect("password command returned non-utf text on stdout")
@@ -57,19 +56,6 @@ fn retrieve_password(pc: &PasswordContainer) -> std::io::Result<String> {
                 .map(|s| s.trim().to_owned())
         }
     }
-}
-
-fn to_imap_seq(seq: HashSet<Seq>) -> String {
-    format!(
-        "({})",
-        seq.into_iter().fold("".to_string(), |acc, x| {
-            if acc.is_empty() {
-                format!("{}", x)
-            } else {
-                format!("{} {}", acc, x)
-            }
-        })
-    )
 }
 
 fn init_maildir<S1, S2>(folder: S1, mailbox: S2) -> std::io::Result<Maildir>
@@ -107,7 +93,7 @@ impl MaildirFlag {
     }
 }
 
-pub fn flags_for_maildir(flags: &[Flag<'_>]) -> String {
+fn flags_for_maildir(flags: &[Flag<'_>]) -> String {
     flags
         .into_iter()
         .filter_map(MaildirFlag::from)
@@ -115,9 +101,8 @@ pub fn flags_for_maildir(flags: &[Flag<'_>]) -> String {
         .collect()
 }
 
-pub async fn get(acc: Account) {
+fn establish_session(acc: &Account, pass: &str) -> Session<TlsStream<TcpStream>> {
     debug!("connecting to mailserver for {:?}", &acc);
-    let pass = retrieve_password(&acc.password).expect("unable to retrieve password");
     let client = match connect(&acc) {
         Ok(c) => c,
         Err(_) => panic!("failed to connect to mail server {}:{}", acc.host, acc.port),
@@ -125,31 +110,99 @@ pub async fn get(acc: Account) {
     debug!("connected!");
 
     debug!("logging in...");
-    let mut session = client
-        .login(acc.username, pass)
+    let session = client
+        .login(&acc.username, pass)
         .expect("failed to login: incorrect credentials");
     debug!("login ok!");
+    session
+}
+
+async fn get_mailbox(acc: Account, name: String, pass: String) -> Result<(), imap::Error> {
+    info!("download mailbox {}", name);
+    let maildir = init_maildir(&acc.folder, &name).unwrap();
+    let mut session = establish_session(&acc, &pass);
+
+    let mailbox = session.examine(&name)?;
+    debug!("examine: {:?}", mailbox);
+
+    // TODO: check local state for mailbox and alter search term based on that
+    let search = session.search("ALL")?;
+    debug!("search: {:?}", search);
+    info!("({}) emails found", search.len());
+
+    let mut handles = Vec::new();
+    {
+        let (tx, mut rx) = mpsc::channel(acc.connections.into());
+
+        let conn: usize = acc.connections.into();
+        let workset_size: usize = search.len() / (conn);
+        if workset_size == 0 {
+            info!("mailbox {} is empty, nothing to fetch", &name);
+            return Ok(());
+        }
+
+        let whole_workset: Vec<_> = search.into_iter().collect();
+        let chunks = whole_workset.as_slice().chunks(workset_size);
+
+        for chunk in chunks {
+            let acc = acc.clone();
+            let pass = pass.clone();
+            let name = name.clone();
+            let workset: Vec<_> = chunk.to_vec();
+            let mut tx = tx.clone();
+            debug!("spawn thread for mailbox {}", name);
+
+            handles.push(tokio::spawn(async move {
+                let mut session = establish_session(&acc, &pass);
+                session.examine(&name).unwrap();
+
+                for uid in workset {
+                    let fetch = session.fetch(format!("{}", uid), "BODY[]").unwrap();
+                    assert_eq!(fetch.len(), 1);
+                    debug!("fetched mail {}, awaiting save", uid);
+                    tx.send(fetch).await.unwrap();
+                    debug!("mail {} saved, continue", uid);
+                }
+                debug!("thread is done");
+            }));
+        }
+
+        handles.push(tokio::spawn(async move {
+            while let Some(mail) = rx.recv().await {
+                let mail = &mail[0];
+                let flags = flags_for_maildir(mail.flags());
+                maildir
+                    .store_cur_with_flags(mail.body().unwrap(), &flags)
+                    .unwrap();
+                debug!("mail saved, awaiting fetch");
+            }
+        }));
+    }
+
+    for handle in handles {
+        handle.await.unwrap();
+    }
+    Ok(())
+}
+
+pub async fn get(acc: Account) {
+    let pass = retrieve_password(&acc.password).expect("unable to retrieve password");
+    let mut session = establish_session(&acc, &pass);
     debug!("listing all");
 
     let names = session.list(None, Some("*")).unwrap();
-
+    let mut handles = Vec::new();
     for name in &names {
-        let maildir = init_maildir(&acc.folder, name.name()).unwrap();
+        let n = name.name().to_string();
+        let acc = acc.clone();
+        let pass = pass.clone();
+        handles.push(get_mailbox(acc, n, pass));
+    }
 
-        debug!("examine mailbox {}", name.name());
-        let mailbox = session.examine(name.name()).unwrap();
-        debug!("examine: {:?}", mailbox);
-
-        let search = session.search("ALL").unwrap();
-        debug!("search: {:?}", search);
-
-        for uid in search {
-            let fetch = session.fetch(format!("{}", uid), "BODY[]").unwrap();
-            assert_eq!(fetch.len(), 1);
-            let flags = flags_for_maildir(fetch[0].flags());
-            maildir
-                .store_cur_with_flags(fetch[0].body().unwrap(), &flags)
-                .unwrap();
+    for handle in handles {
+        match handle.await {
+            Err(e) => error!("an unexpected error has occured: {:?}", e),
+            _ => {}
         }
     }
 }

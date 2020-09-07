@@ -3,19 +3,19 @@ use std::fmt::{self, Debug, Formatter};
 use std::fs::File;
 use std::io::{Read, Result};
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 pub enum PasswordContainer {
     Plaintext(String),
     Shell(String),
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, Clone)]
 pub enum Method {
     StartTls,
     Tls,
 }
 
-#[derive(Deserialize, Debug)]
+#[derive(Deserialize, Debug, Copy, Clone)]
 pub struct ConnectionCount(usize);
 impl Default for ConnectionCount {
     fn default() -> Self {
@@ -23,7 +23,13 @@ impl Default for ConnectionCount {
     }
 }
 
-#[derive(Deserialize)]
+impl Into<usize> for ConnectionCount {
+    fn into(self) -> usize {
+        self.0
+    }
+}
+
+#[derive(Deserialize, Clone)]
 pub struct Account {
     pub host: String,
     pub port: u16,
