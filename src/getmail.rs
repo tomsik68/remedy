@@ -2,7 +2,7 @@ use super::config::*;
 use anyhow::{anyhow, Context, Result};
 use imap::types::Flag;
 use imap::Session;
-use log::{debug, error, info};
+use log::{debug, info};
 use maildir::Maildir;
 use native_tls::{TlsConnector, TlsStream};
 use quick_error::quick_error;
@@ -204,7 +204,7 @@ async fn get_mailbox(acc: Account, name: String, pass: String) -> Result<()> {
     Ok(())
 }
 
-pub async fn get(acc: Account) {
+pub async fn get(acc: Account) -> Result<()> {
     let pass = retrieve_password(&acc.password).expect("unable to retrieve password");
     let mut session = establish_session(&acc, &pass);
     debug!("listing all");
@@ -218,10 +218,8 @@ pub async fn get(acc: Account) {
         handles.push(get_mailbox(acc, n, pass));
     }
 
-    for handle in handles {
-        match handle.await {
-            Err(e) => error!("an unexpected error has occured: {:?}", e),
-            _ => {}
-        }
-    }
+    futures::future::try_join_all(handles)
+        .await
+        .with_context(|| format!("failed to get mail for the account {:?}", acc))?;
+    Ok(())
 }
