@@ -1,8 +1,11 @@
 use super::config::*;
+use anyhow::{anyhow, Context, Result};
 use imap::types::Flag;
 use imap::Session;
+use log::{debug, error, info};
 use maildir::Maildir;
 use native_tls::{TlsConnector, TlsStream};
+use quick_error::quick_error;
 use std::ffi::OsString;
 use std::net::TcpStream;
 use std::path::PathBuf;
@@ -24,37 +27,40 @@ quick_error! {
     }
 }
 
-fn connect(acc: &Account) -> Result<imap::Client<TlsStream<TcpStream>>, MailError> {
+fn connect(acc: &Account) -> Result<imap::Client<TlsStream<TcpStream>>> {
     use Method::*;
 
     let host: &str = &acc.host;
     let port = acc.port;
     let tls = TlsConnector::new()?;
     match &acc.method {
-        Tls => imap::connect((host, port), host, &tls).map_err(MailError::from),
-        StartTls => imap::connect_starttls((host, port), host, &tls).map_err(MailError::from),
+        Tls => Ok(imap::connect((host, port), host, &tls).map_err(MailError::from)?),
+        StartTls => Ok(imap::connect_starttls((host, port), host, &tls).map_err(MailError::from)?),
     }
 }
 
-fn retrieve_password(pc: &PasswordContainer) -> std::io::Result<String> {
+fn retrieve_password(pc: &PasswordContainer) -> Result<String> {
     use PasswordContainer::*;
     match pc {
         Plaintext(p) => Ok(p.clone()),
-        Shell(cmd) => {
+        Shell(cmd) => Ok({
             debug!("start shell command to retrieve password {}", &cmd);
             let mut spl = shlex::split(&cmd)
-                .expect("failed executing password command")
+                .context("failed executing password command")?
                 .into_iter()
                 .map(OsString::from);
-            Command::new(spl.next().unwrap())
-                .args(spl)
-                .output()
-                .map(|o| {
-                    String::from_utf8(o.stdout)
-                        .expect("password command returned non-utf text on stdout")
-                })
-                .map(|s| s.trim().to_owned())
-        }
+            Command::new(
+                spl.next()
+                    .ok_or(anyhow!("The shell command for password is required"))?,
+            )
+            .args(spl)
+            .output()
+            .map(|o| {
+                String::from_utf8(o.stdout)
+                    .expect("password command returned non-utf text on stdout")
+            })
+            .map(|s| s.trim().to_owned())
+        }?),
     }
 }
 
@@ -117,7 +123,7 @@ fn establish_session(acc: &Account, pass: &str) -> Session<TlsStream<TcpStream>>
     session
 }
 
-async fn get_mailbox(acc: Account, name: String, pass: String) -> Result<(), imap::Error> {
+async fn get_mailbox(acc: Account, name: String, pass: String) -> Result<()> {
     info!("download mailbox {}", name);
     let maildir = init_maildir(&acc.folder, &name).unwrap();
     let mut session = establish_session(&acc, &pass);
@@ -149,21 +155,29 @@ async fn get_mailbox(acc: Account, name: String, pass: String) -> Result<(), ima
             let pass = pass.clone();
             let name = name.clone();
             let workset: Vec<_> = chunk.to_vec();
-            let mut tx = tx.clone();
+            let tx = tx.clone();
             debug!("spawn thread for mailbox {}", name);
 
             handles.push(tokio::spawn(async move {
                 let mut session = establish_session(&acc, &pass);
-                session.examine(&name).unwrap();
+                session
+                    .examine(&name)
+                    .with_context(|| format!("Failed to examine session {}", name))?;
 
                 for uid in workset {
-                    let fetch = session.fetch(format!("{}", uid), "BODY[]").unwrap();
+                    let fetch = session
+                        .fetch(format!("{}", uid), "BODY[]")
+                        .with_context(|| format!("fetching mail {} failed", uid))?;
                     assert_eq!(fetch.len(), 1);
                     debug!("fetched mail {}, awaiting save", uid);
-                    tx.send(fetch).await.unwrap();
+                    tx.send(fetch)
+                        .await
+                        .with_context(|| format!("saving mail {} failed", uid))?;
                     debug!("mail {} saved, continue", uid);
                 }
                 debug!("thread is done");
+
+                Ok(())
             }));
         }
 
@@ -172,16 +186,21 @@ async fn get_mailbox(acc: Account, name: String, pass: String) -> Result<(), ima
                 let mail = &mail[0];
                 let flags = flags_for_maildir(mail.flags());
                 maildir
-                    .store_cur_with_flags(mail.body().unwrap(), &flags)
-                    .unwrap();
+                    .store_cur_with_flags(
+                        mail.body().with_context(|| {
+                            format!("failed to retrieve body for mail {:?}", mail.uid)
+                        })?,
+                        &flags,
+                    )
+                    .with_context(|| format!("failed to store mail {:?}", mail.uid))?;
                 debug!("mail saved, awaiting fetch");
             }
+
+            Result::<(), anyhow::Error>::Ok(())
         }));
     }
 
-    for handle in handles {
-        handle.await.unwrap();
-    }
+    futures::future::try_join_all(handles).await?;
     Ok(())
 }
 

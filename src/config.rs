@@ -1,3 +1,4 @@
+use log::debug;
 use serde::Deserialize;
 use std::fmt::{self, Debug, Formatter};
 use std::fs::File;
@@ -15,18 +16,8 @@ pub enum Method {
     Tls,
 }
 
-#[derive(Deserialize, Debug, Copy, Clone)]
-pub struct ConnectionCount(usize);
-impl Default for ConnectionCount {
-    fn default() -> Self {
-        ConnectionCount(1)
-    }
-}
-
-impl Into<usize> for ConnectionCount {
-    fn into(self) -> usize {
-        self.0
-    }
+fn zero() -> usize {
+    0
 }
 
 #[derive(Deserialize, Clone)]
@@ -37,8 +28,8 @@ pub struct Account {
     pub username: String,
     pub password: PasswordContainer,
     pub folder: String,
-    #[serde(default)]
-    pub connections: ConnectionCount,
+    #[serde(default = "zero")]
+    pub connections: usize,
 }
 
 #[derive(Deserialize, Debug)]

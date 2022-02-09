@@ -2,7 +2,7 @@
 name = "remedy"
 version = "0.1.0"
 authors = ["Tomas Jasek <tomsik68@posteo.net>"]
-edition = "2018"
+edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
@@ -10,10 +10,12 @@ edition = "2018"
 maildir = "0.4"
 toml = "0.5"
 imap = "2.3"
-tokio = {version="0.2", features=["full"]}
+tokio = {version="1", features=["full"]}
 serde = { version = "1.0", features = ["derive"] }
 log = "0.4"
 env_logger = "0.7"
 native-tls = "0.2"
 quick-error = "2.0"
 shlex = "0.1"
+futures = "0.3"
+anyhow = "1"

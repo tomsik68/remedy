@@ -1,12 +1,3 @@
-extern crate env_logger;
-#[macro_use]
-extern crate log;
-extern crate imap;
-extern crate native_tls;
-extern crate serde;
-#[macro_use]
-extern crate quick_error;
-
 mod config;
 mod getmail;
 
@@ -27,7 +18,5 @@ async fn main() {
         })
         .collect();
 
-    for handle in handles {
-        handle.await.unwrap();
-    }
+    futures::future::try_join_all(handles).await.unwrap();
 }

@@ -1,0 +1,8 @@
+[[accounts]]
+host = "example.com"
+username = "user@example.com"
+password = { Shell = "pass show Example.com" }
+port = 993
+method = "Tls"
+folder = "/home/user/mail/example.com/"
+connections = 4
