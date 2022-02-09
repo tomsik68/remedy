@@ -45,7 +45,7 @@ fn retrieve_password(pc: &PasswordContainer) -> Result<String> {
         Plaintext(p) => Ok(p.clone()),
         Shell(cmd) => Ok({
             debug!("start shell command to retrieve password {}", &cmd);
-            let mut spl = shlex::split(&cmd)
+            let mut spl = shlex::split(cmd)
                 .context("failed executing password command")?
                 .into_iter()
                 .map(OsString::from);
@@ -86,7 +86,7 @@ impl MaildirFlag {
         self.0
     }
 
-    fn from<'a>(f: &Flag<'a>) -> Option<MaildirFlag> {
+    fn from(f: &Flag<'_>) -> Option<MaildirFlag> {
         use Flag::*;
         match f {
             Seen => Some(MaildirFlag('S')),
@@ -101,7 +101,7 @@ impl MaildirFlag {
 
 fn flags_for_maildir(flags: &[Flag<'_>]) -> String {
     flags
-        .into_iter()
+        .iter()
         .filter_map(MaildirFlag::from)
         .map(|mf| mf.as_char())
         .collect()
@@ -109,7 +109,7 @@ fn flags_for_maildir(flags: &[Flag<'_>]) -> String {
 
 fn establish_session(acc: &Account, pass: &str) -> Session<TlsStream<TcpStream>> {
     debug!("connecting to mailserver for {:?}", &acc);
-    let client = match connect(&acc) {
+    let client = match connect(acc) {
         Ok(c) => c,
         Err(_) => panic!("failed to connect to mail server {}:{}", acc.host, acc.port),
     };
@@ -138,9 +138,9 @@ async fn get_mailbox(acc: Account, name: String, pass: String) -> Result<()> {
 
     let mut handles = Vec::new();
     {
-        let (tx, mut rx) = mpsc::channel(acc.connections.into());
+        let (tx, mut rx) = mpsc::channel(acc.connections);
 
-        let conn: usize = acc.connections.into();
+        let conn: usize = acc.connections;
         let workset_size: usize = search.len() / (conn);
         if workset_size == 0 {
             info!("mailbox {} is empty, nothing to fetch", &name);
