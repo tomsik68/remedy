@@ -9,6 +9,7 @@
 //! - configurable via toml (see `config.example.toml`)
 //! - multiple accounts
 //! - basic logging so it's possible to see what's going on
+//! - use a shell command to retrieve account password
 //!
 //! Missing features:
 //! - save local state to prevent synchronization of already downloaded e-mails
